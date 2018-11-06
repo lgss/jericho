@@ -1,25 +1,44 @@
 import unittest
 import boto3
-import sys
 import json
-import io
 import datetime
 import time
 import HtmlTestRunner
 import urllib3
-import jericho_config
+from jericho_config import config
 import os
+import zipfile
+import test_bootstrap
+import shutil
 
 
 def run_html_tests():
-    tests = unittest.TestLoader().discover('tests', "testL*.py")
-    os.chdir('/tmp') #HtmlTestRunner sucks and relies on cwd but AWS Lambda only allows writing to /tmp/
-    runner = HtmlTestRunner.HTMLTestRunner("", report_title="Jericho Test Report", template="/var/task/report_template.html")
+    tests = unittest.TestLoader().discover(config.tests_root)
+    os.chdir(config.working_dir) # HtmlTestRunner is annoying; it relies on cwd but AWS Lambda only allows writing to /tmp/
+    runner = HtmlTestRunner.HTMLTestRunner("", report_title="Jericho Test Report", template= config.function_root + "/report_template.html")
     res = runner.run(tests)
     return res
 
 
 def lambda_handler(event, context):
+    res_dst = os.path.join(config.working_dir, "resource.zip")
+    t = event.resource.type
+    if t == "url":
+        http = urllib3.PoolManager()
+        with http.request('GET', event.resource.location, preload_content=False) as resp, open(res_dst, 'wb') as out_file:
+            shutil.copyfileobj(resp, out_file)
+    elif t == "s3":
+        s3 = boto3.resource(
+            's3',
+            aws_access_key_id=event.resource.key_id,
+            aws_secret_access_key=event.resource.key)
+        s3.Bucket(event.resource.bucket).download_file(event.resource.file_key, res_dst)
+    else:
+        raise Exception("Invalid resource type")
+
+    zipfile.ZipFile(res_dst).extractall(path=config.tests_root)
+
+    test_bootstrap.setenv(event.environment)
     tests_result = run_html_tests()
 
     path = save_test_log()
@@ -34,8 +53,8 @@ def lambda_handler(event, context):
 
 def do_slack_message(results, path):
     root = "https://s3.{}.amazonaws.com/{}/".format(
-        jericho_config.cfg().get("AWS", "Region"),
-        jericho_config.cfg().get("AWS", "BucketName"))
+        config.out_region,
+        config.out_bucket_name)
     url = root + path.replace(" ", "+")
     all_good = len(results.failures) == 0 and len(results.errors) == 0
     if all_good:
@@ -58,7 +77,7 @@ def do_slack_message(results, path):
                 "fallback": "View the test report at " + url,
                 "thumb_url": thumb,
                 "text": errs,
-                "footer": "Jericho Automated Tests",
+                "footer": "Jericho Automated Tests by LGSS Digital",
                 "ts": int(time.mktime(datetime.datetime.now().timetuple())),
                 "actions": [
                     {
@@ -71,9 +90,9 @@ def do_slack_message(results, path):
         ]
     })
 
-    if jericho_config.cfg().getboolean("Slack", "Enable", fallback=False):
+    if config.use_slack:
         http = urllib3.PoolManager()
-        r = http.request("POST", jericho_config.cfg().get("Slack", "WebhookEndpoint"),
+        r = http.request("POST", config.slack_endpoint,
                          headers={'Content-Type': 'application/json'},
                          body=body_data)
     return body_data
@@ -82,22 +101,36 @@ def do_slack_message(results, path):
 def save_test_log():
     s3_client = boto3.client(
         's3',
-        aws_access_key_id=jericho_config.cfg().get("AWS", "AccessKeyID"),
-        aws_secret_access_key=jericho_config.cfg().get("AWS", "AccessKeySecret"))
+        aws_access_key_id=config.out_bucket_key_id,
+        aws_secret_access_key=config.out_bucket_key)
     key = datetime.datetime.now().strftime("output/%Y-%m/test %Y-%m-%d %H%M.html")
-    dir_list = os.listdir("/tmp/reports/") # this is a nasty hack to deal with the crappy HTMLTestRunner component
+    dir_list = os.listdir(config.working_dir + "reports/") # this is a nasty hack to deal with the HTMLTestRunner component
     try:
-        with open('/tmp/reports/' + dir_list[0], "r", encoding='utf-8') as f:
+        with open(config.working_dir + 'reports/' + dir_list[0], "r", encoding='utf-8') as f:
             body_data = f.read()
-        s3_client.put_object(Body=body_data, Bucket=jericho_config.cfg().get("AWS", "BucketName"), Key=key, ACL='public-read', ContentType="text/html")
+
+        if config.out_bucket_name:
+            s3_client.put_object(Body=body_data, Bucket=config.out_bucket_name, Key=key, ACL='public-read', ContentType="text/html")
     finally:
-        os.remove('/tmp/reports/' + dir_list[0])
+        os.remove(config.working_dir + 'reports/' + dir_list[0])
     return key
 
 
+def build_test_suite(root, configfile):
+    return 1
+
+
 if __name__ == '__main__':
-    jericho_config.load_config(sys.argv[1:])
-    tests = unittest.TestLoader().discover('tests', "test*.py")
-    runner = HtmlTestRunner.HTMLTestRunner("tmp", report_title="test_report", template="./report_template.html")
-    res = runner.run(tests)
-    print(res)
+    lambda_handler(type('obj', (object,), {
+        "resource": type('obj', (object,), {
+            "type": "url",
+            "location": "https://s3.eu-west-2.amazonaws.com/jerichotest/NoCC.zip"
+        }),
+        "environment": {
+
+        }
+    }), None)
+    #tests = unittest.TestLoader().discover(config.tests_root, "test*.py")
+    #runner = HtmlTestRunner.HTMLTestRunner(config.working_dir, report_title="test_report", template="./report_template.html")
+    #res = runner.run(tests)
+    #print(res)
