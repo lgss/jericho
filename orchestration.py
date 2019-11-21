@@ -4,7 +4,7 @@ import json
 import datetime
 import time
 import HtmlTestRunner
-import urllib3
+import botocore.vendored.requests.packages.urllib3 as urllib3
 from jericho_config import config
 import os
 import zipfile
@@ -13,7 +13,7 @@ import shutil
 
 
 def run_html_tests():
-    tests = unittest.TestLoader().discover(config.tests_root)
+    tests = unittest.TestLoader().discover(config.tests_root, "test*.py")
     os.chdir(config.working_dir) # HtmlTestRunner is annoying; it relies on cwd but AWS Lambda only allows writing to /tmp/
     runner = HtmlTestRunner.HTMLTestRunner("", report_title="Jericho Test Report", template= config.function_root + "/report_template.html")
     res = runner.run(tests)
@@ -22,23 +22,27 @@ def run_html_tests():
 
 def lambda_handler(event, context):
     res_dst = os.path.join(config.working_dir, "resource.zip")
-    t = event.resource.type
+    print(event)
+    t = event["resource"]["type"]
     if t == "url":
         http = urllib3.PoolManager()
-        with http.request('GET', event.resource.location, preload_content=False) as resp, open(res_dst, 'wb') as out_file:
+        with http.request('GET', event["resource"]["location"], preload_content=False) as resp, open(res_dst, 'wb') as out_file:
             shutil.copyfileobj(resp, out_file)
     elif t == "s3":
+        res = event["resource"]
         s3 = boto3.resource(
             's3',
-            aws_access_key_id=event.resource.key_id,
-            aws_secret_access_key=event.resource.key)
-        s3.Bucket(event.resource.bucket).download_file(event.resource.file_key, res_dst)
+            aws_access_key_id=res['key_id'] if 'key_id' in res else config.src_bucket_key_id,
+            aws_secret_access_key=res['key'] if 'key' in res else config.src_bucket_key)
+        s3.Bucket(event['resource']['bucket']).download_file(event['resource']['file_key'], res_dst)
     else:
         raise Exception("Invalid resource type")
 
+    if os.path.isdir(config.tests_root):
+        shutil.rmtree(config.tests_root)
     zipfile.ZipFile(res_dst).extractall(path=config.tests_root)
 
-    test_bootstrap.setenv(event.environment)
+    test_bootstrap.setenv(event["environment"])
     tests_result = run_html_tests()
 
     path = save_test_log()
@@ -47,8 +51,7 @@ def lambda_handler(event, context):
     return {
         "succeeded": len(tests_result.successes),
         "failed": len(tests_result.failures),
-        "errors": len(tests_result.errors),
-        "slack": slack}
+        "errors": len(tests_result.errors)}
 
 
 def do_slack_message(results, path):
@@ -99,10 +102,7 @@ def do_slack_message(results, path):
 
 
 def save_test_log():
-    s3_client = boto3.client(
-        's3',
-        aws_access_key_id=config.out_bucket_key_id,
-        aws_secret_access_key=config.out_bucket_key)
+    s3_client = boto3.client('s3')
     key = datetime.datetime.now().strftime("output/%Y-%m/test %Y-%m-%d %H%M.html")
     dir_list = os.listdir(config.working_dir + "reports/") # this is a nasty hack to deal with the HTMLTestRunner component
     try:
@@ -130,7 +130,3 @@ if __name__ == '__main__':
 
         }
     }), None)
-    #tests = unittest.TestLoader().discover(config.tests_root, "test*.py")
-    #runner = HtmlTestRunner.HTMLTestRunner(config.working_dir, report_title="test_report", template="./report_template.html")
-    #res = runner.run(tests)
-    #print(res)

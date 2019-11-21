@@ -2,14 +2,13 @@ import boto3
 import zipfile
 import os
 import sys
+import json
 from jericho_config import config
 
 
 def setup():
     s3 = boto3.resource(
-        's3',
-        aws_access_key_id=config.src_bucket_key_id,
-        aws_secret_access_key=config.src_bucket_key)
+        's3')
 
     s3.Bucket(config.src_bucket_name).download_file("chrome.zip", config.working_dir + "chrome.zip")
     s3.Bucket(config.src_bucket_name).download_file("lib.zip", config.working_dir + "lib.zip")
@@ -24,4 +23,6 @@ def setup():
 def lambda_handler(event, context):
     setup()
     import orchestration
+    if isinstance(event, str):
+        event = json.loads(event)
     return orchestration.lambda_handler(event, context)

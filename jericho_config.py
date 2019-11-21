@@ -12,7 +12,7 @@ class JerichoConfig():
 
     @property
     def src_bucket_key(self):
-        return os.getenv("JER_SRC_KEY", os.getenv("AWS_ACCESS_KEY"))
+        return os.getenv("JER_SRC_KEY", os.getenv("AWS_SECRET_ACCESS_KEY"))
 
     @property
     def out_region(self):
@@ -28,11 +28,12 @@ class JerichoConfig():
 
     @property
     def out_bucket_key(self):
-        return os.getenv("JER_OUT_KEY", os.getenv("AWS_ACCESS_KEY"))
+        return os.getenv("JER_OUT_KEY", os.getenv("AWS_SECRET_ACCESS_KEY"))
 
     @property
     def use_slack(self):
-        return os.getenv("JER_ENABLE_SLACK", os.getenv("JER_SLACK_ENDPOINT") is not None)
+        enable = os.getenv("JER_ENABLE_SLACK")
+        return (enable is None or enable.lower() == "true") and os.getenv("JER_SLACK_ENDPOINT") is not None
 
     @property
     def slack_endpoint(self):

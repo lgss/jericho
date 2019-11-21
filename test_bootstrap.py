@@ -12,7 +12,9 @@ def getenv(test_module):
 
 
 def setenv(env):
+    global environment
     environment = env
+    print("setenv" + str(environment))
 
 def loadenv(json_str):
     environment = json.loads(json_str)
@@ -29,6 +31,8 @@ class JerichoTest(unittest.TestCase):
             self.env = environment[self.__class__.__module__]
         else:
             self.env = {}
+            
+        print(str(environment) + '\n' + str(self.env))
 
 
     def setUp(self):
